@@ -1,4 +1,32 @@
-function [AD,bD,A,b] = DGM(mesh,rhs,alpha,varargin)
+function [AD,bD,u,err] = DGM(mesh,rhs,alpha,uex,varargin)
+% DGM computes the stiffness matrix (with boundary data) AD, the right-hand
+% side bD, the exact solution u, and the L2-error err, for Poisson equation
+% in 2D, given by -div(\rho \grad u) = rhs,
+% discretized with the symmetric interior penalty discontinuous
+% Galerkin element method on a polygonal mesh.
+%
+% SYNOPSIS: DGM(mesh,rhs,alpha,uex,rho)
+%
+% INPUT:  mesh:	 struct with the following fields:
+%                mesh.nodes2coord - mesh nodes
+%                mesh.elems2nodes - mesh connectivity
+%                mesh.edges       - edge connectivity
+%                mesh.edges2elems - edge2elem matrix
+%                mesh.edgeSign    - orientation of edges
+%                mesh.bdNode      - mesh nodes on boundary
+%                mesh.NE          - number of elements
+%                mesh.Ne          - number of edges
+%                mesh.NeBnd       - number of boundary edges
+%                mesh.NeInt       - number of interior edges
+%         rhs:   function handle for the right-hand side
+%         alpha: stability constant
+%         uex:   function handle for the exact solution (to cumpute err)
+%         rho:   function handle for the coefficient
+%
+% EXAMPLE:
+%         DGM(mesh,rhs,alpha,uex) uses rho = 1
+
+% AUTHOR: Juan G. Calvo and collaborators, 2023
 
 % read fields of mesh
 nodes2coord = mesh.nodes2coord;
@@ -13,36 +41,39 @@ NeBnd = mesh.NedgesBnd;
 NeInt = mesh.NedgesInt;
 
 % coefficient $\rho$
-if(size(varargin,2)==1)  % read $\rho$ (if given)
-    rhoV = varargin{1};
-    if(isa(rhoV,'function_handle')) % function that is evaluated at the incenter
-        centroid = (nodes2coord(elems2nodes(:,1),:)+nodes2coord(elems2nodes(:,2),:)+nodes2coord(elems2nodes(:,3),:))/3;
-        rho = rhoV(centroid(:,1),centroid(:,2));
-    else
-        rho = rhoV;                 % vector with one entry per element
-    end
-else                     % default: $\rho = 1$
-    rho = ones(size(mesh.elems2nodes,1),1);
+if(size(varargin,2)==1)  % read \rho (if given)
+    rhoFn    = varargin{1};
+    % evaluation of \rho at centroids of triangles
+    centroid = (nodes2coord(elems2nodes(:,1),:)+nodes2coord(elems2nodes(:,2),:)+nodes2coord(elems2nodes(:,3),:))/3;
+    rhoElem  = rhoFn(centroid(:,1),centroid(:,2));
+    % evaluation of \rho at midpoints of edges
+    midptsEdges = (nodes2coord(edges(:,1),:)+nodes2coord(edges(:,2),:))/2;
+    rhoEdge = rhoFn(midptsEdges(:,1),midptsEdges(:,2));
+else                     % otherwise \rho = 1
+    rhoElem = ones(size(elems2nodes,1),1);
+    rhoEdge = ones(size(edges,1),1);
 end
 
-
-%% contributions of \int_K \rho \nabla \phi_i \cdot \nabla \phi_j
+% contributions of \int_K \rho \nabla \phi_i \cdot \nabla \phi_j
 glbInd = 1:3*NE; glbInd = reshape(glbInd,3,NE)';
 v1 = nodes2coord(elems2nodes(:,1),:);
 v2 = nodes2coord(elems2nodes(:,2),:);
 v3 = nodes2coord(elems2nodes(:,3),:);
 xx = v1-v2; yy = v2-v3; zz = v3-v1;
 area = 0.5*(-xx(:,1).*zz(:,2) + xx(:,2).*zz(:,1));
-a11 = sum(yy.*yy,2)./(4*area).*rho; a12 = sum(yy.*zz,2)./(4*area).*rho;
-a13 = sum(yy.*xx,2)./(4*area).*rho; a22 = sum(zz.*zz,2)./(4*area).*rho;
-a23 = sum(zz.*xx,2)./(4*area).*rho; a33 = sum(xx.*xx,2)./(4*area).*rho;
+a11 = sum(yy.*yy,2)./(4*area).*rhoElem;
+a12 = sum(yy.*zz,2)./(4*area).*rhoElem;
+a13 = sum(yy.*xx,2)./(4*area).*rhoElem;
+a22 = sum(zz.*zz,2)./(4*area).*rhoElem;
+a23 = sum(zz.*xx,2)./(4*area).*rhoElem;
+a33 = sum(xx.*xx,2)./(4*area).*rhoElem;
 ii = [glbInd(:,1); glbInd(:,1); glbInd(:,2); glbInd(:,1); glbInd(:,3); glbInd(:,2); glbInd(:,2); glbInd(:,3); glbInd(:,3)];
 jj = [glbInd(:,1); glbInd(:,2); glbInd(:,1); glbInd(:,3); glbInd(:,1); glbInd(:,2); glbInd(:,3); glbInd(:,2); glbInd(:,3)];
 ss = [a11; a12; a12; a13; a13; a22; a23; a23; a33];
 A1 = sparse(ii,jj,ss,3*NE,3*NE);
 clear a11 a12 a13 a22 a23 a33 ii jj ss v1 v2 v3 xx yy zz
 
-%% contributions of edge integrals
+% contributions of edge integrals
 % allocate vectors
 sizeMat = 9*NeBnd + 36*NeInt; pt = 0;      % matrices: 3x3 edge on boundary, 6x6 interior edge
 ii = nan(sizeMat,1); ssB = nan(sizeMat,1); % allocate space
@@ -75,7 +106,8 @@ for edgeID = 1:Ne                    % loop over all edges
         b31 = dot(xx,xx)/(4*mycross(xx,aa));
         B22 = [b11 b11 0; b21 b21 0; b31 b31 0];
         % bilinear form b1
-        M1 = [B11*rho(elem1) -B11*rho(elem2); -B22*rho(elem1) B22*rho(elem2)];
+        %M1 = [B11*rho(elem1) -B11*rho(elem2); -B22*rho(elem1) B22*rho(elem2)];
+        M1 = rhoEdge(edgeID)*[B11 -B11; -B22 B22];
         % bilinear form b2
         B11 = [1/3 1/6 0; 1/6 1/3 0; 0 0 0];
         M2  = [B11 -B11; -B11 B11];
@@ -118,7 +150,7 @@ for edgeID = 1:Ne                    % loop over all edges
         b2 = dot(xx,zz)/(2*mycross(xx,zz));
         b3 = dot(xx,xx)/(2*mycross(yy,xx));
         % bilinear form b1
-        M1 = [b1 b1 0; b2 b2 0; b3 b3 0]*rho(elem1);
+        M1 = rhoEdge(edgeID)*[b1 b1 0; b2 b2 0; b3 b3 0];
         % bilinear form b2
         M2 = [1/3 1/6 0; 1/6 1/3 0; 0 0 0];
         % position: find global dofs
@@ -142,29 +174,22 @@ end
 M1 = sparse(ii,jj,ssB);
 M2 = sparse(ii,jj,ssC);
 
-%% assemble matrix
+% assemble matrix
 A = A1-M1-M1'+alpha*M2;
 clear A1 M1 M2
 
-%% rhs
-% quadrature rule
-lambda = [1/3, 1/3, 1/3]; 
-weight = 1;
-nQuad = size(lambda,1); 
-% compute rhs
+% rhs
+% one point quadrature rule for rhs (centroid)
 b = zeros(NE,3);
-for p = 1:nQuad
-    pxy = lambda(p,1)*nodes2coord(elems2nodes(:,1),:) ...
-        + lambda(p,2)*nodes2coord(elems2nodes(:,2),:) ...
-        + lambda(p,3)*nodes2coord(elems2nodes(:,3),:);
-    fp = rhs(pxy);
-    for i = 1:3
-        b(:,i) = b(:,i) + weight(p)*lambda(p,i)*fp;
-    end
+pxy = (nodes2coord(elems2nodes(:,1),:) ...
+    + nodes2coord(elems2nodes(:,2),:) ...
+    + nodes2coord(elems2nodes(:,3),:)) / 3;
+for i = 1:3
+    b(:,i) = b(:,i) + rhs(pxy)/3;
 end
 b = (b.*repmat(area,1,3))'; b = b(:);
 
-%% Dirichlet conditions
+% Dirichlet conditions
 Ndof  = 3*NE;
 % find boundary dof
 bdryDof = [];
@@ -172,17 +197,26 @@ for j = 1:NE
     nodes = elems2nodes(j,:);
     tem = glbInd(j,myismember2(nodes, bdNode));
     if(numel(tem)>0)
-        bdryDof = [bdryDof, tem]; %#ok<AGROW> 
+        bdryDof = [bdryDof, tem]; %#ok<AGROW>
     end
 end
+% force boundary conditions
 bdidx = zeros(Ndof,1); bdidx(bdryDof) = 1;
 Tbd = spdiags(bdidx,0,Ndof,Ndof);
 T   = spdiags(1-bdidx,0,Ndof,Ndof);
 AD  = T*A*T + Tbd;
 bD = b;
 bD(bdryDof) = 0;
+
+% direct solver
+u = AD\bD;
+
+% compute L2 error
+uElem = reshape(u,3,NE); uElem = uElem';
+err = getL2error(nodes2coord,elems2nodes,uex,uElem,area);
 end
 
+%% required functions
 function v = mycross(v1,v2)
 v = v1(1)*v2(2)-v1(2)*v2(1);
 end
@@ -192,7 +226,7 @@ function lia = myismember2(a,b)
 % Example: a = [4 6 2]; b = [1 2 4 5 7]; lia = [1 0 1]
 lia = false(1,3);
 for i=1:3
-   lia(i) = any(a(i)==b);
+    lia(i) = any(a(i)==b);
 end
 end
 
@@ -205,4 +239,15 @@ while(add>0)
     lia = lia + 1;
     add = sum(b==a(lia));
 end
+end
+
+function L2err = getL2error(node,elem,uex,uElem,area)
+% compute L2err by adding L2 approximations of integral with one-point
+% quadrature rule (evaluation at barycenter)
+% approximated solution at barycenters
+uh = sum(uElem,2)/3; 
+% exact solution at barycenters
+centroid = (node(elem(:,1),:)+node(elem(:,2),:)+node(elem(:,3),:))/3;
+% compute quadrature rule
+L2err = sqrt(sum(area.*(uex(centroid)-uh).^2));
 end
