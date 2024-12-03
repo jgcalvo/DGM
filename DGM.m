@@ -1,4 +1,4 @@
-function [AD,bD,u,err] = DGM(mesh,rhs,alpha,uex,varargin)
+function [A,b,u,err] = DGM(mesh,rhs,alpha,uex,varargin)
 % DGM computes the stiffness matrix (with boundary data) AD, the right-hand
 % side bD, the exact solution u, and the L2-error err, for Poisson equation
 % in 2D, given by -div(\rho \grad u) = rhs,
@@ -13,7 +13,6 @@ function [AD,bD,u,err] = DGM(mesh,rhs,alpha,uex,varargin)
 %                mesh.edges       - edge connectivity
 %                mesh.edges2elems - edge2elem matrix
 %                mesh.edgeSign    - orientation of edges
-%                mesh.bdNode      - mesh nodes on boundary
 %                mesh.NE          - number of elements
 %                mesh.Ne          - number of edges
 %                mesh.NeBnd       - number of boundary edges
@@ -34,7 +33,6 @@ elems2nodes = mesh.elems2nodes;
 edges2elems = mesh.edges2elems;
 edges       = mesh.edges;
 edgeSign    = mesh.edgeSign;
-bdNode      = mesh.bdNode;
 NE    = mesh.NElems;
 Ne    = mesh.Nedges;
 NeBnd = mesh.NedgesBnd;
@@ -189,27 +187,8 @@ for i = 1:3
 end
 b = (b.*repmat(area,1,3))'; b = b(:);
 
-% Dirichlet conditions
-Ndof  = 3*NE;
-% find boundary dof
-bdryDof = [];
-for j = 1:NE
-    nodes = elems2nodes(j,:);
-    tem = glbInd(j,myismember2(nodes, bdNode));
-    if(numel(tem)>0)
-        bdryDof = [bdryDof, tem]; %#ok<AGROW>
-    end
-end
-% force boundary conditions
-bdidx = zeros(Ndof,1); bdidx(bdryDof) = 1;
-Tbd = spdiags(bdidx,0,Ndof,Ndof);
-T   = spdiags(1-bdidx,0,Ndof,Ndof);
-AD  = T*A*T + Tbd;
-bD = b;
-bD(bdryDof) = 0;
-
 % direct solver
-u = AD\bD;
+u = A\b;
 
 % compute L2 error
 uElem = reshape(u,3,NE); uElem = uElem';
@@ -219,15 +198,6 @@ end
 %% required functions
 function v = mycross(v1,v2)
 v = v1(1)*v2(2)-v1(2)*v2(1);
-end
-
-function lia = myismember2(a,b)
-% check if elements of vector b are in vector a (with a: 1x3 vector)
-% Example: a = [4 6 2]; b = [1 2 4 5 7]; lia = [1 0 1]
-lia = false(1,3);
-for i=1:3
-    lia(i) = any(a(i)==b);
-end
 end
 
 function lia = myismember(a,b)
