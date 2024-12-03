@@ -42,7 +42,7 @@ switch opt
             % stability constant
             alpha = 20;
         end
-        results = zeros(10,2); % store results
+        results = zeros(7,2); % store results
         for N = 1:7            % loop meshes
             % load triangulation
             mesh = load(['./meshes/tria_' type '_' num2str(N)]); mesh = mesh.mesh;
